@@ -45,6 +45,11 @@ static const size_t RX_LEN_BYTE = 4;
 static const size_t RX_TYPE_BYTE = 7;
 static const uint8_t RX_TYPE_STATE = 0xA3;      // état complet (34 o), envoyé à chaque changement
 static const uint8_t RX_TYPE_HEARTBEAT = 0xA4;  // battement de cœur (13 o), toutes les 10 s
+static const uint8_t RX_TYPE_STATE_EXTRA = 0xA6;  // complément (28 o), suit toujours une trame d'état
+// Une trame invalide d'au moins cette taille est peut-être une trame d'état perdue
+// (le battement, seule autre trame spontanée, fait 13 o).
+static const size_t RX_DOUBT_MIN_LEN = 20;
+static const size_t QUALITY_WINDOW = 20;  // trames prises en compte pour link_quality
 // 0xA6 (28 o) : trame complémentaire suivant chaque état, contenu nul observé.
 
 // Offsets dans la trame RX (clim -> ESP).
@@ -445,17 +450,28 @@ class Gateway {
     bool header_ok = n > RX_TYPE_BYTE && frame[0] == HDR0 && frame[1] == HDR1 && frame[RX_LEN_BYTE] == n;
     bool crc_ok = rx_crc_ok(frame.data(), n);
     if (!header_ok || (check_rx_crc && !crc_ok)) {
-      // Fréquent si la liaison est bruitée (soudure, fils) : ignoré silencieusement.
+      // Fréquent si la liaison est bruitée (soudure, fils) : ignoré, mais compté.
       ESP_LOGD(TAG, "RX invalide ignorée (%s) : %s", header_ok ? "CRC" : "en-tête/longueur", hex.c_str());
+      record_quality_(false);
+      // Une trame d'état abîmée = un changement (télécommande) peut-être manqué.
+      bool is_extra = header_ok && frame[RX_TYPE_BYTE] == RX_TYPE_STATE_EXTRA;
+      if (n >= RX_DOUBT_MIN_LEN && !is_extra)
+        set_doubt_(true, "trame d'état abîmée");
       return false;
     }
     // Toute trame valide prouve que le lien série fonctionne.
     last_rx_ms_ = now;
     have_rx_ = true;
+    record_quality_(true);
 
     uint8_t type = frame[RX_TYPE_BYTE];
     if (type == RX_TYPE_HEARTBEAT) {
       ESP_LOGV(TAG, "RX battement : %s", hex.c_str());
+      return false;
+    }
+    if (type == RX_TYPE_STATE_EXTRA && (!have_state_rx_ || (now - last_state_rx_ms_) > 1000)) {
+      // Complément reçu sans la trame d'état qui le précède : elle a été perdue.
+      set_doubt_(true, "trame d'état manquante");
       return false;
     }
     if (type != RX_TYPE_STATE || n < RX_MIN_LEN) {
@@ -463,6 +479,9 @@ class Gateway {
       return false;
     }
     ESP_LOGI(TAG, "RX état : %s", hex.c_str());
+    have_state_rx_ = true;
+    last_state_rx_ms_ = now;
+    set_doubt_(false, "trame d'état reçue");
     publish_value_("last_frame", hex, true, false);  // dernière trame d'état, retenue (diagnostic)
 
     AcState rx;
@@ -576,6 +595,14 @@ class Gateway {
       ESP_LOGW(TAG, "set/%s ignoré : aucune trame reçue de la clim (état inconnu)", key.c_str());
       return false;
     }
+    if (doubt_) {
+      // Une commande envoie l'état complet : avec un état peut-être périmé, elle pourrait
+      // défaire un changement fait à la télécommande (ex. éteindre une clim allumée).
+      ESP_LOGW(TAG, "set/%s refusé : état incertain (trame de la clim perdue). "
+                    "Un appui sur la télécommande resynchronise.", key.c_str());
+      publish_value_("cmd_status", "refused", true, false);
+      return false;
+    }
 
     ESP_LOGI(TAG, "set/%s = %s", key.c_str(), v.c_str());
     state_ = s;
@@ -616,6 +643,7 @@ class Gateway {
       state_.mute = mute;
     }
     publish_value_("cmd_status", "failed", true, false);
+    set_doubt_(true, "commande non confirmée");
     publish_state_(false);
   }
 
@@ -624,7 +652,23 @@ class Gateway {
   // --- Diagnostic --------------------------------------------------------
   bool unit_link(uint32_t now) const { return have_rx_ && (now - last_rx_ms_) < link_timeout_ms; }
 
-  void publish_link(uint32_t now) { publish_value_("unit_link", bool_str(unit_link(now)), true, false); }
+  void publish_link(uint32_t now) {
+    publish_value_("unit_link", bool_str(unit_link(now)), true, false);
+    if (quality_count_ > 0)
+      publish_value_("link_quality", std::to_string(link_quality()), true, false);
+    publish_value_("state_doubt", bool_str(doubt_), true, false);
+  }
+
+  // Pourcentage de trames valides parmi les QUALITY_WINDOW dernières.
+  int link_quality() const {
+    if (quality_count_ == 0)
+      return 100;
+    size_t ok = 0;
+    for (size_t i = 0; i < quality_count_; i++)
+      ok += quality_hist_[i] ? 1 : 0;
+    return static_cast<int>((ok * 100) / quality_count_);
+  }
+  bool doubt() const { return doubt_; }
 
   void publish_diag(int rssi, uint32_t uptime_s, uint32_t now) {
     publish_value_("rssi", std::to_string(rssi), true, false);
@@ -684,6 +728,30 @@ class Gateway {
       send_(f);
   }
 
+  void record_quality_(bool ok) {
+    quality_hist_[quality_idx_] = ok;
+    quality_idx_ = (quality_idx_ + 1) % QUALITY_WINDOW;
+    if (quality_count_ < QUALITY_WINDOW)
+      quality_count_++;
+  }
+
+  void set_doubt_(bool d, const char *why) {
+    if (d == doubt_)
+      return;
+    doubt_ = d;
+    if (d)
+      ESP_LOGW(TAG, "État incertain (%s) : commandes refusées jusqu'à la prochaine trame d'état", why);
+    else
+      ESP_LOGI(TAG, "État de nouveau certain (%s)", why);
+    publish_value_("state_doubt", bool_str(d), true, false);
+  }
+
+  bool quality_hist_[QUALITY_WINDOW] = {};
+  size_t quality_idx_ = 0;
+  size_t quality_count_ = 0;
+  bool doubt_ = false;
+  bool have_state_rx_ = false;
+  uint32_t last_state_rx_ms_ = 0;
   AcState ac_state_;
   bool have_ac_state_ = false;
   bool awaiting_ = false;

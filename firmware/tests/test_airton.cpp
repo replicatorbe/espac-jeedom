@@ -282,6 +282,52 @@ static void test_persistence() {
   CHECK(!gw.restored());
 }
 
+static void test_doubt_and_quality() {
+  printf("- État incertain et qualité de liaison\n");
+  Gateway gw;
+  std::vector<std::string> keys, vals;
+  gw.set_publisher([&](const std::string &k, const std::string &v, bool) { keys.push_back(k); vals.push_back(v); return true; });
+  auto last = [&](const std::string &k) -> std::string {
+    for (size_t i = keys.size(); i-- > 0;)
+      if (keys[i] == k) return vals[i];
+    return "<absent>";
+  };
+  auto state = make_rx(21, 0x39, 6, 4, 0x88);
+  auto extra = from_hex("7A 7A D5 21 1C 00 00 A6 0A 0A 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 52 0B");
+  auto hb = from_hex("7A 7A D1 21 0D 00 00 A4 0A 0A 00 25 25");
+  gw.on_rx_frame(state, 1000);
+  gw.on_rx_frame(extra, 1100);          // complément juste après l'état : normal
+  CHECK(!gw.doubt());
+  // Battement abîmé (court) : qualité dégradée mais pas de doute.
+  auto hb_bad = hb;
+  hb_bad.resize(11);
+  gw.on_rx_frame(hb_bad, 2000);
+  CHECK(!gw.doubt());
+  CHECK(gw.link_quality() == 66);       // 2 valides / 3
+  // Trame d'état abîmée (longue) : doute.
+  auto st_bad = state;
+  st_bad[20] ^= 0xFF;
+  gw.on_rx_frame(st_bad, 3000);
+  CHECK(gw.doubt());
+  CHECK(!gw.on_set("target_temperature", "24", 3100));
+  CHECK_EQ_STR(last("cmd_status"), "refused");
+  // Nouvelle trame d'état valide : doute levé, commande acceptée.
+  gw.on_rx_frame(state, 4000);
+  CHECK(!gw.doubt());
+  CHECK(gw.on_set("target_temperature", "24", 4100));
+  // Complément seul, sans trame d'état récente : l'état a été perdu.
+  gw.on_rx_frame(extra, 9000);
+  CHECK(gw.doubt());
+  gw.publish_link(9000);
+  CHECK_EQ_STR(last("state_doubt"), "ON");
+  // Complément abîmé : pas de doute supplémentaire (ce n'est pas un état).
+  gw.on_rx_frame(state, 9500);
+  auto extra_bad = extra;
+  extra_bad[15] ^= 0x01;
+  gw.on_rx_frame(extra_bad, 9600);
+  CHECK(!gw.doubt());
+}
+
 static void test_decode_guards() {
   printf("- Décodage : longueur minimale, valeurs hors table\n");
   AcState out;
@@ -438,6 +484,12 @@ static void test_gateway() {
   CHECK(sent.size() == n0 + 3);
   CHECK_EQ_STR(last("display"), "ON");
   CHECK_EQ_STR(last("cmd_status"), "failed");
+  // Après un échec, l'état est incertain : commandes refusées jusqu'à la prochaine trame d'état.
+  CHECK(gw.doubt());
+  CHECK(!gw.on_set("power", "ON", 25000));
+  CHECK_EQ_STR(last("cmd_status"), "refused");
+  gw.on_rx_frame(make_rx(23, 0xDC, 9, 4, 0x88), 25500);
+  CHECK(!gw.doubt());
 
   // mute : non renvoyé par la clim, conservé ; toute trame d'état confirme la réception.
   CHECK(gw.on_set("mute", "OFF", 26000));
@@ -475,6 +527,7 @@ int main() {
   test_roundtrip();
   test_real_frames();
   test_persistence();
+  test_doubt_and_quality();
   test_decode_guards();
   test_splitter();
   test_gateway();
