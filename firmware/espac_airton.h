@@ -409,7 +409,8 @@ class Gateway {
   using PublishFn = std::function<bool(const std::string &, const std::string &, bool)>;
   using SendFn = std::function<void(const std::vector<uint8_t> &)>;
 
-  uint32_t ignore_window_ms = 3000;  // fenêtre d'ignorance des RX contradictoires
+  uint32_t confirm_timeout_ms = 1200;  // délai de confirmation d'une commande par la clim
+  uint8_t max_attempts = 3;            // envois au total (1 + 2 renvois) avant abandon
   uint32_t tx_debounce_ms = 150;     // regroupe plusieurs `set` rapprochés en une trame
   uint32_t link_timeout_ms = 60000;  // unit_link
   bool check_rx_crc = true;
@@ -467,23 +468,28 @@ class Gateway {
     AcState rx;
     decode(frame.data(), n, state_, rx);
 
-    // Fenêtre post-commande : on ignore les trames qui contredisent la commande.
-    if (pending_fields_ != 0) {
-      bool in_window = (now - last_cmd_ms_) < ignore_window_ms;
+    rx.mute = state_.mute;  // le volume n'est pas renvoyé par la clim
+    ac_state_ = rx;         // dernier état réellement annoncé par la clim
+    have_ac_state_ = true;
+
+    // Commande en cours (pas encore envoyée, ou envoyée et non confirmée) : une trame
+    // qui contredit les champs commandés ne les écrase pas. Le renvoi est géré par loop().
+    if (tx_due_ || awaiting_) {
       uint16_t contra = diff_fields(rx, state_) & pending_fields_;
-      if (in_window && contra != 0) {
-        ESP_LOGD(TAG, "RX contradictoire ignorée (champs 0x%03X, commande il y a %u ms)", contra,
-                 (unsigned) (now - last_cmd_ms_));
+      if (contra != 0) {
+        ESP_LOGD(TAG, "RX ne confirme pas encore la commande (champs 0x%03X)", contra);
         state_.room_temp = rx.room_temp;
         publish_state_(false);
         return true;
       }
-      if (contra != 0)
-        ESP_LOGW(TAG, "La clim n'a pas confirmé la commande (champs 0x%03X) : état de la clim retenu", contra);
-      pending_fields_ = 0;
+      if (awaiting_ && !tx_due_) {
+        ESP_LOGI(TAG, "Commande confirmée par la clim (essai %u)", (unsigned) attempts_);
+        awaiting_ = false;
+        pending_fields_ = 0;
+        publish_value_("cmd_status", "ok", true, false);
+      }
     }
 
-    rx.mute = state_.mute;  // le volume n'est pas renvoyé par la clim
     if (!synced_ || restored_) {
       ESP_LOGI(TAG, "Trame d'état reçue : synchronisé avec la clim");
       synced_ = true;
@@ -576,7 +582,6 @@ class Gateway {
     // Le volume n'est pas renvoyé par la clim : inutile de bloquer les RX pour lui.
     if (field != F_MUTE)
       pending_fields_ |= field;
-    last_cmd_ms_ = now;
     tx_due_ = true;
     tx_due_ms_ = now + tx_debounce_ms;
     publish_state_(false);  // optimiste
@@ -584,16 +589,37 @@ class Gateway {
   }
 
   // À appeler régulièrement : envoie la trame en attente (après anti-rebond).
+  // Gère aussi les renvois : la clim répond à chaque trame reçue par une trame d'état ;
+  // sans confirmation, la commande est renvoyée, puis abandonnée après max_attempts.
   void loop(uint32_t now) {
     if (tx_due_ && static_cast<int32_t>(now - tx_due_ms_) >= 0) {
       tx_due_ = false;
-      last_cmd_ms_ = now;  // la fenêtre démarre à l'émission réelle
-      std::vector<uint8_t> f = encode(state_);
-      ESP_LOGI(TAG, "TX : %s", to_hex(f.data(), f.size()).c_str());
-      if (send_)
-        send_(f);
+      attempts_ = 0;
+      send_state_(now);
+      publish_value_("cmd_status", "pending", true, false);
+      return;
     }
+    if (!awaiting_ || (now - last_tx_ms_) < confirm_timeout_ms)
+      return;
+    if (attempts_ < max_attempts) {
+      ESP_LOGW(TAG, "Pas de confirmation de la clim : nouvel envoi (%u/%u)", (unsigned) (attempts_ + 1),
+               (unsigned) max_attempts);
+      send_state_(now);
+      return;
+    }
+    ESP_LOGW(TAG, "Commande non confirmée après %u envois : abandon", (unsigned) attempts_);
+    awaiting_ = false;
+    pending_fields_ = 0;
+    if (have_ac_state_) {
+      bool mute = state_.mute;
+      state_ = ac_state_;  // Jeedom doit refléter l'état réel, pas la commande perdue
+      state_.mute = mute;
+    }
+    publish_value_("cmd_status", "failed", true, false);
+    publish_state_(false);
   }
+
+  bool awaiting() const { return awaiting_; }
 
   // --- Diagnostic --------------------------------------------------------
   bool unit_link(uint32_t now) const { return have_rx_ && (now - last_rx_ms_) < link_timeout_ms; }
@@ -648,7 +674,21 @@ class Gateway {
   bool restored_ = false;
   bool have_rx_ = false;
   uint32_t last_rx_ms_ = 0;
-  uint32_t last_cmd_ms_ = 0;
+  void send_state_(uint32_t now) {
+    std::vector<uint8_t> f = encode(state_);
+    attempts_++;
+    awaiting_ = true;
+    last_tx_ms_ = now;
+    ESP_LOGI(TAG, "TX (essai %u) : %s", (unsigned) attempts_, to_hex(f.data(), f.size()).c_str());
+    if (send_)
+      send_(f);
+  }
+
+  AcState ac_state_;
+  bool have_ac_state_ = false;
+  bool awaiting_ = false;
+  uint8_t attempts_ = 0;
+  uint32_t last_tx_ms_ = 0;
   uint16_t pending_fields_ = 0;
   bool tx_due_ = false;
   uint32_t tx_due_ms_ = 0;

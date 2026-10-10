@@ -35,6 +35,7 @@ Découverte côté Jeedom : abonnement à `espac/+/status` et `espac/+/info`.
 | `clean` | ✔ | ✔ | `ON` / `OFF` (nettoyage / ioniseur) |
 | `room_temperature` | ✔ | ✘ | entier °C (sonde interne de la clim, octet RX `[10]`) |
 | `unit_link` | ✔ | ✘ | `ON` si une trame valide de la clim a été reçue < 60 s, sinon `OFF` |
+| `cmd_status` | ✔ | ✘ | `pending` (commande envoyée), `ok` (confirmée par la clim), `failed` (non confirmée après 3 envois : l'état réel de la clim est republié) |
 | `last_frame` | ✔ | ✘ | hex de la dernière trame RX (diagnostic, non retenu) |
 | `rssi` | ✔ | ✘ | dBm |
 | `uptime` | ✔ | ✘ | secondes |

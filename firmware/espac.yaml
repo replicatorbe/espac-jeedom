@@ -5,7 +5,7 @@
 substitutions:
   device_name: espac-salon          # [a-z0-9-], utilisé dans les topics espac/<dev>/...
   friendly_name: "ESPAC Salon"
-  fw_version: "0.4.0"
+  fw_version: "0.5.0"
   mqtt_broker: 192.168.0.125
   # Broches (ESP32 DevKit 30 broches)
   uart_tx_pin: GPIO16               # TX ESP -> RX clim (fil bleu côté clim)
@@ -14,7 +14,7 @@ substitutions:
   # Réception
   rx_gap_ms: "30"                   # silence inter-octets marquant la fin d'une trame
   rx_check_crc: "true"              # CRC RX confirmé sur la vraie clim (même algo que TX)
-  cmd_ignore_ms: "3000"             # fenêtre d'ignorance des RX contradictoires après commande
+  cmd_confirm_ms: "1200"            # délai de confirmation par la clim avant renvoi (3 envois max)
 
 esphome:
   name: ${device_name}
@@ -30,7 +30,7 @@ esphome:
       - lambda: |-
           auto &gw = espac::gateway();
           gw.check_rx_crc = ${rx_check_crc};
-          gw.ignore_window_ms = ${cmd_ignore_ms};
+          gw.confirm_timeout_ms = ${cmd_confirm_ms};
           gw.restore(id(saved_state));
           espac::splitter().set_gap(${rx_gap_ms});
           gw.set_publisher([](const std::string &key, const std::string &value, bool retain) -> bool {

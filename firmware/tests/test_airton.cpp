@@ -236,10 +236,9 @@ static void test_real_frames() {
   CHECK(gw.state().target_extra == 0);
   CHECK(encode(gw.state())[12] == 0x09 && encode(gw.state())[13] == 0x44);
   // Passage de silence à vitesse 1 : bit 0x40 retiré, quartet ventilation = 1.
-  CHECK(gw.on_set("fan", "very_low", 450));
-  gw.loop(1000);
   {
     AcState q = gw.state();
+    q.fan = 1;
     CHECK(encode(q)[12] == 0x19 && encode(q)[13] == 0x04);
     q.fan = FAN_QUIET;
     CHECK(encode(q)[12] == 0x09 && encode(q)[13] == 0x44);
@@ -326,7 +325,7 @@ struct Pub {
 };
 
 static void test_gateway() {
-  printf("- Passerelle : sync, set, fenêtre d'ignorance, publication sur changement\n");
+  printf("- Passerelle : sync, set, confirmation et renvois, publication sur changement\n");
   Gateway gw;
   std::vector<Pub> pubs;
   std::vector<std::vector<uint8_t>> sent;
@@ -385,35 +384,68 @@ static void test_gateway() {
   CHECK(sent.size() == 1);
   if (!sent.empty()) CHECK(sent[0][12] == 0x3C);  // medium | marche | heat
 
-  // RX contradictoire (encore éteinte) pendant la fenêtre : ignorée, sauf temp. pièce.
+  CHECK_EQ_STR(last("cmd_status"), "pending");
+
+  // RX contradictoire (encore éteinte) : ne confirme pas, la commande est gardée (sauf temp. pièce).
   auto rx_off2 = make_rx(23, 0x35, 6, 4, 0x88);
-  gw.on_rx_frame(rx_off2, 4000);
+  gw.on_rx_frame(rx_off2, 3500);
   CHECK_EQ_STR(last("power"), "ON");
   CHECK_EQ_STR(last("room_temperature"), "23");
+  CHECK(gw.awaiting());
 
-  // RX confirmant la commande : acceptée.
+  // Pas de confirmation dans le délai : renvoi de la même trame.
+  gw.loop(3250 + 1199);
+  CHECK(sent.size() == 1);
+  gw.loop(3250 + 1200);
+  CHECK(sent.size() == 2);
+  if (sent.size() == 2) CHECK(sent[1] == sent[0]);
+
+  // RX confirmant la commande : acceptée, statut ok, plus de renvoi.
   gw.on_rx_frame(make_rx(23, 0x3C, 6, 4, 0x88), 4500);
   CHECK_EQ_STR(last("power"), "ON");
   CHECK_EQ_STR(last("mode"), "heat");
+  CHECK_EQ_STR(last("cmd_status"), "ok");
+  CHECK(!gw.awaiting());
+  gw.loop(10000);
+  CHECK(sent.size() == 2);
 
-  // Changement venu de la télécommande (hors fenêtre) : pris en compte (lecture continue).
+  // Changement venu de la télécommande : pris en compte (lecture continue).
   gw.on_rx_frame(make_rx(23, 0xDC, 7, 4, 0x88), 20000);
   CHECK_EQ_STR(last("fan"), "turbo");
   CHECK_EQ_STR(last("target_temperature"), "23");
 
-  // Commande non confirmée : après la fenêtre, l'état de la clim l'emporte.
+  // Trame reçue pendant l'anti-rebond (commande pas encore envoyée) : n'écrase pas la commande.
+  CHECK(gw.on_set("target_temperature", "25", 20500));
+  gw.on_rx_frame(make_rx(23, 0xDC, 7, 4, 0x88), 20550);
+  CHECK_EQ_STR(last("target_temperature"), "25");
+  gw.loop(20700);
+  CHECK(sent.back()[13] == 9);
+  gw.on_rx_frame(make_rx(23, 0xDC, 9, 4, 0x88), 20800);
+  CHECK_EQ_STR(last("cmd_status"), "ok");
+
+  // Commande jamais confirmée : 3 envois, puis abandon et retour à l'état réel de la clim.
+  size_t n0 = sent.size();
   CHECK(gw.on_set("display", "OFF", 21000));
   gw.loop(21200);
   CHECK_EQ_STR(last("display"), "OFF");
-  gw.on_rx_frame(make_rx(23, 0xDC, 7, 4, 0x88), 25000);
+  gw.loop(22400);
+  gw.loop(23600);
+  CHECK(sent.size() == n0 + 3);
+  gw.loop(24799);
+  CHECK(gw.awaiting());
+  gw.loop(24800);
+  CHECK(!gw.awaiting());
+  CHECK(sent.size() == n0 + 3);
   CHECK_EQ_STR(last("display"), "ON");
+  CHECK_EQ_STR(last("cmd_status"), "failed");
 
-  // mute : non renvoyé par la clim, conservé.
+  // mute : non renvoyé par la clim, conservé ; toute trame d'état confirme la réception.
   CHECK(gw.on_set("mute", "OFF", 26000));
   gw.loop(26200);
   CHECK(sent.back()[16] == 0);
-  gw.on_rx_frame(make_rx(23, 0xDC, 7, 4, 0x88), 26300);
+  gw.on_rx_frame(make_rx(23, 0xDC, 9, 4, 0x88), 26300);
   CHECK_EQ_STR(last("mute"), "OFF");
+  CHECK_EQ_STR(last("cmd_status"), "ok");
 
   // power OFF depuis heat puis ON : le mode heat revient.
   gw.on_set("power", "off", 30000);
