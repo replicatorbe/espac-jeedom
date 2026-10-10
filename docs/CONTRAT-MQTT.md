@@ -27,7 +27,7 @@ Découverte côté Jeedom : abonnement à `espac/+/status` et `espac/+/info`.
 | `power` | ✔ | ✔ | `ON` / `OFF` |
 | `mode` | ✔ | ✔ | `auto` `cool` `dry` `fan_only` `heat` |
 | `target_temperature` | ✔ | ✔ | entier 16–31 (°C) |
-| `fan` | ✔ | ✔ | `auto` `very_low` `low` `medium` `high` `very_high` `humidity` `turbo` |
+| `fan` | ✔ | ✔ | `auto` `quiet` `very_low` `low` `medium` `high` `very_high` `turbo` `humidity` |
 | `swing_v` | ✔ | ✔ | `off` `auto` `very_high` `high` `medium` `low` `very_low` |
 | `swing_h` | ✔ | ✔ | `ON` / `OFF` |
 | `display` | ✔ | ✔ | `ON` / `OFF` |
@@ -79,6 +79,10 @@ Le CRC RX est le même que le CRC TX (CRC-16/MODBUS sur toute la trame sauf les 
 | `A3` | 34 | `D5` | état complet, envoyé à chaque changement (télécommande ou commande) |
 | `A6` | 28 | `D5` | complément suivant chaque état (octets nuls observés) |
 
-Octet consigne `[14]` : bits 0-4 = consigne − 16 ; bits 5-7 = drapeaux (`0x40` observé en mode froid),
-recopiés tels quels en TX. `[21]` reflète le mode (0 auto, 1 cool, 2 dry, 3 fan_only, 4 heat).
+Octet consigne `[14]` : bits 0-4 = consigne − 16 ; bit 6 (`0x40`) = ventilation **silence**
+(avec quartet ventilation = 0) ; bits 5 et 7 inconnus, recopiés tels quels en TX.
+
+Cycle de la touche ventilation de la télécommande (confirmé) :
+`very_high`(5) → `turbo`(13, « méga-turbo ») → `humidity`(6, rôle exact inconnu) → `auto`(0)
+→ `quiet`(0 + bit 0x40) → `very_low`(1) → `low`(2) → `medium`(3) → `high`(4) → `very_high`(5). `[21]` reflète le mode (0 auto, 1 cool, 2 dry, 3 fan_only, 4 heat).
 La clim n'envoie **pas** d'état périodique : uniquement à la mise sous tension et à chaque changement.

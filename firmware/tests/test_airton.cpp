@@ -231,9 +231,19 @@ static void test_real_frames() {
   CHECK(gw.on_rx_frame(cool20, 400));
   CHECK(gw.synced());
   CHECK(gw.state().power && gw.state().mode == 1 && gw.state().target == 20 && gw.state().room_temp == 21);
-  CHECK(gw.state().target_extra == 0x40);
-  // La consigne renvoyée conserve le drapeau 0x40.
-  CHECK(encode(gw.state())[13] == 0x44);
+  // 0x40 dans l'octet consigne = ventilation « silence ».
+  CHECK(gw.state().fan == FAN_QUIET);
+  CHECK(gw.state().target_extra == 0);
+  CHECK(encode(gw.state())[12] == 0x09 && encode(gw.state())[13] == 0x44);
+  // Passage de silence à vitesse 1 : bit 0x40 retiré, quartet ventilation = 1.
+  CHECK(gw.on_set("fan", "very_low", 450));
+  gw.loop(1000);
+  {
+    AcState q = gw.state();
+    CHECK(encode(q)[12] == 0x19 && encode(q)[13] == 0x04);
+    q.fan = FAN_QUIET;
+    CHECK(encode(q)[12] == 0x09 && encode(q)[13] == 0x44);
+  }
   CHECK(gw.on_rx_frame(heat28, 500));
   CHECK(gw.state().mode == 4 && gw.state().target == 28 && gw.state().target_extra == 0);
   // Trame corrompue (CRC) rejetée.

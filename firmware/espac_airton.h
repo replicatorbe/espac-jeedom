@@ -78,8 +78,12 @@ struct Code {
 static const Code MODES[] = {{0, "auto"}, {1, "cool"}, {2, "dry"}, {3, "fan_only"}, {4, "heat"}};
 
 // Ventilation : codes du quartet haut de b12. Turbo = 13 (l'original envoyait 7 : bug).
-static const Code FANS[] = {{0, "auto"}, {1, "very_low"},  {2, "low"},      {3, "medium"},
-                            {4, "high"}, {5, "very_high"}, {6, "humidity"}, {13, "turbo"}};
+// Cycle de la télécommande : 5 → 13 → 6 → 0 → silence → 1 → 2 → 3 → 4 → 5.
+// « quiet » (silence) n'est pas un code du quartet : c'est ventilation 0 + bit 0x40 de l'octet consigne.
+static const uint8_t FAN_QUIET = 0x0F;          // code interne (jamais émis tel quel)
+static const uint8_t SETPOINT_QUIET_BIT = 0x40; // bit « silence » de l'octet consigne
+static const Code FANS[] = {{0, "auto"},      {1, "very_low"}, {2, "low"},   {3, "medium"},     {4, "high"},
+                            {5, "very_high"}, {6, "humidity"}, {13, "turbo"}, {FAN_QUIET, "quiet"}};
 
 static const Code SWINGS_V[] = {{0, "off"},    {1, "auto"}, {2, "very_high"}, {3, "high"},
                                 {4, "medium"}, {5, "low"},  {6, "very_low"}};
@@ -153,7 +157,7 @@ struct AcState {
   uint8_t mode = 3;         // dernier mode actif (conservé quand power=OFF)
   uint8_t fan = 0;          // code du quartet haut (0..6, 13)
   uint8_t target = 24;      // consigne °C (16..31)
-  uint8_t target_extra = 0; // bits 5-7 de l'octet consigne (0x40 observé en froid) : recopiés tels quels
+  uint8_t target_extra = 0; // bits 5 et 7 de l'octet consigne (inconnus) : recopiés tels quels
   uint8_t swing_v = 0;      // 0..6
   bool swing_h = false;
   bool display = true;
@@ -181,7 +185,8 @@ enum Field : uint16_t {
 // ---------------------------------------------------------------------------
 inline uint8_t encode_b12(const AcState &s) {
   uint8_t low = s.power ? static_cast<uint8_t>(POWER_BIT | (s.mode & 0x07)) : MODE_OFF_CODE;
-  return static_cast<uint8_t>(((s.fan & 0x0F) << 4) | low);
+  uint8_t fan = s.fan == FAN_QUIET ? 0 : s.fan;
+  return static_cast<uint8_t>(((fan & 0x0F) << 4) | low);
 }
 
 inline uint8_t encode_b15(const AcState &s) {
@@ -195,7 +200,8 @@ inline std::vector<uint8_t> encode(const AcState &s) {
   std::vector<uint8_t> f(TX_HEADER, TX_HEADER + sizeof(TX_HEADER));
   f.push_back(encode_b12(s));
   uint8_t t = s.target < 16 ? 16 : (s.target > 31 ? 31 : s.target);
-  f.push_back(static_cast<uint8_t>((t - 16) | (s.target_extra & 0xE0)));
+  uint8_t quiet = s.fan == FAN_QUIET ? SETPOINT_QUIET_BIT : 0;
+  f.push_back(static_cast<uint8_t>((t - 16) | (s.target_extra & 0xA0) | quiet));
   f.push_back(static_cast<uint8_t>(((s.swing_h ? 1 : 0) << 4) | (s.swing_v & 0x0F)));
   f.push_back(encode_b15(s));
   f.push_back(s.mute ? 1 : 0);
@@ -233,14 +239,16 @@ inline bool decode(const uint8_t *buf, size_t len, const AcState &prev, AcState 
   if (code_to_name(MODES, m) != nullptr)
     out.mode = m;  // m == 5 (« Off ») : on garde le dernier mode
   uint8_t fan = mf >> 4;
-  if (code_to_name(FANS, fan) != nullptr)
+  if (fan == 0 && (buf[RX_SETPOINT] & SETPOINT_QUIET_BIT))
+    out.fan = FAN_QUIET;
+  else if (fan != FAN_QUIET && code_to_name(FANS, fan) != nullptr)
     out.fan = fan;
 
   // Bits 0-4 = consigne − 16 ; bits 5-7 = drapeaux (0x40 vu en mode froid), conservés.
   int t = (buf[RX_SETPOINT] & 0x1F) + 16;
   if (t >= 16 && t <= 31) {
     out.target = static_cast<uint8_t>(t);
-    out.target_extra = buf[RX_SETPOINT] & 0xE0;
+    out.target_extra = buf[RX_SETPOINT] & 0xA0;
   }
 
   uint8_t sw = buf[RX_SWING];
