@@ -278,10 +278,10 @@ static void test_gateway() {
     else CHECK(p.retain);
   }
 
-  // Trame identique : seul last_frame est republié.
+  // Trame identique : rien n'est republié (last_frame compris).
   size_t before = pubs.size();
   gw.on_rx_frame(rx_off, 2000);
-  CHECK(pubs.size() == before + 1 && pubs.back().key == "last_frame");
+  CHECK(pubs.size() == before);
 
   // Valeurs invalides ignorées.
   CHECK(!gw.on_set("mode", "turbo", 2100));
