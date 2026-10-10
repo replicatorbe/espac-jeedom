@@ -32,14 +32,14 @@ esphome:
           gw.check_rx_crc = ${rx_check_crc};
           gw.ignore_window_ms = ${cmd_ignore_ms};
           espac::splitter().set_gap(${rx_gap_ms});
-          gw.set_publisher([](const std::string &key, const std::string &value, bool retain) {
+          gw.set_publisher([](const std::string &key, const std::string &value, bool retain) -> bool {
             if (!id(mqtt_client).is_connected())
-              return;
-            id(mqtt_client).publish("espac/${device_name}/state/" + key, value, 0, retain);
+              return false;
+            return id(mqtt_client).publish("espac/${device_name}/state/" + key, value, 0, retain);
           });
           gw.set_sender([](const std::vector<uint8_t> &frame) {
             id(uart_bus).write_array(frame.data(), frame.size());
-            id(led).turn_on();
+            id(led_flash).execute();
           });
           // Un seul abonnement pour toutes les commandes : espac/<dev>/set/<clé>
           static const std::string prefix = "espac/${device_name}/set/";
@@ -91,6 +91,7 @@ mqtt:
   broker: ${mqtt_broker}
   port: 1883
   discovery: false
+  discover_ip: false
   topic_prefix: espac/${device_name}
   log_topic: null                   # pas de logs sur MQTT : seul le contrat est publié
   birth_message:
@@ -105,24 +106,6 @@ mqtt:
     topic: espac/${device_name}/status
     payload: offline
     retain: true
-  on_connect:
-    then:
-      - lambda: |-
-          char ip[network::IP_ADDRESS_BUFFER_SIZE] = "";
-          auto addrs = wifi::global_wifi_component->get_ip_addresses();
-          for (auto &a : addrs) {
-            if (a.is_set()) {
-              a.str_to(ip);
-              break;
-            }
-          }
-          std::string info = "{\"name\":\"${device_name}\",\"mac\":\"" + get_mac_address_pretty() +
-                             "\",\"ip\":\"" + std::string(ip) + "\",\"version\":\"${fw_version}\"," +
-                             "\"fw\":\"espac-jeedom\"}";
-          id(mqtt_client).publish("espac/${device_name}/info", info, 0, true);
-          auto &gw = espac::gateway();
-          gw.publish_diag(wifi::global_wifi_component->wifi_rssi(), millis() / 1000, millis());
-          gw.publish_all();
 
 uart:
   id: uart_bus
@@ -134,23 +117,26 @@ uart:
   stop_bits: 1
   rx_buffer_size: 1024
 
-sensor:
-  - platform: uptime
-    id: uptime_s
-    internal: true
-    update_interval: 60s
-
-switch:
+# LED : output + script (pas d'entité ESPHome, donc rien de publié en MQTT hors contrat).
+output:
   - platform: gpio
-    id: led
-    internal: true
+    id: led_out
     pin:
       number: ${led_pin}
       ignore_strapping_warning: true   # GPIO2 = LED intégrée, sans risque ici
-    restore_mode: ALWAYS_OFF
-    on_turn_on:
+
+script:
+  - id: led_flash
+    mode: restart
+    then:
+      - output.turn_on: led_out
       - delay: 60ms
-      - switch.turn_off: led
+      - output.turn_off: led_out
+
+globals:
+  - id: mqtt_was_connected
+    type: bool
+    initial_value: "false"
 
 interval:
   # Lecture continue de l'UART + découpage en trames + envoi des commandes en attente.
@@ -167,11 +153,37 @@ interval:
           }
           if (!got) {
             for (auto &frame : sp.poll(millis())) {
-              id(led).turn_on();
+              id(led_flash).execute();
               gw.on_rx_frame(frame, millis());
             }
           }
           gw.loop(millis());
+
+  # (Re)connexion MQTT : info + republication complète. Fait ici et non dans mqtt.on_connect,
+  # car avec esp-idf on_connect est appelé avant que publish() soit possible.
+  - interval: 1s
+    then:
+      - lambda: |-
+          bool now_connected = id(mqtt_client).is_connected();
+          if (now_connected && !id(mqtt_was_connected)) {
+            char ip[network::IP_ADDRESS_BUFFER_SIZE] = "";
+            for (auto &a : wifi::global_wifi_component->get_ip_addresses()) {
+              if (a.is_set()) {
+                a.str_to(ip);
+                break;
+              }
+            }
+            std::string info = "{\"name\":\"${device_name}\",\"mac\":\"" + get_mac_address_pretty() +
+                               "\",\"ip\":\"" + std::string(ip) + "\",\"version\":\"${fw_version}\"," +
+                               "\"fw\":\"espac-jeedom\"}";
+            // Si l'info échoue, on retentera à la seconde suivante.
+            if (!id(mqtt_client).publish("espac/${device_name}/info", info, 0, true))
+              return;
+            auto &gw = espac::gateway();
+            gw.publish_all();
+            gw.publish_diag(wifi::global_wifi_component->wifi_rssi(), millis() / 1000, millis());
+          }
+          id(mqtt_was_connected) = now_connected;
 
   # Diagnostic : rssi, uptime, unit_link (pas de SNTP nécessaire).
   - interval: 60s
@@ -179,8 +191,7 @@ interval:
       - lambda: |-
           if (!id(mqtt_client).is_connected())
             return;
-          uint32_t up = isnan(id(uptime_s).state) ? millis() / 1000 : (uint32_t) id(uptime_s).state;
-          espac::gateway().publish_diag(wifi::global_wifi_component->wifi_rssi(), up, millis());
+          espac::gateway().publish_diag(wifi::global_wifi_component->wifi_rssi(), millis() / 1000, millis());
 
   # unit_link réactif (passage OFF dès 60 s sans trame, sans attendre le cycle de diag).
   - interval: 5s

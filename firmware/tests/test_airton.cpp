@@ -245,7 +245,7 @@ static void test_gateway() {
   Gateway gw;
   std::vector<Pub> pubs;
   std::vector<std::vector<uint8_t>> sent;
-  gw.set_publisher([&](const std::string &k, const std::string &v, bool r) { pubs.push_back({k, v, r}); });
+  gw.set_publisher([&](const std::string &k, const std::string &v, bool r) { pubs.push_back({k, v, r}); return true; });
   gw.set_sender([&](const std::vector<uint8_t> &f) { sent.push_back(f); });
   auto last = [&](const std::string &k) -> std::string {
     for (auto it = pubs.rbegin(); it != pubs.rend(); ++it)

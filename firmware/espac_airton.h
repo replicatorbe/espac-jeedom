@@ -338,7 +338,8 @@ class FrameSplitter {
 class Gateway {
  public:
   // publish(clé, valeur, retain) : la colle YAML construit le topic espac/<dev>/state/<clé>.
-  using PublishFn = std::function<void(const std::string &, const std::string &, bool)>;
+  // Retourne false si la publication a échoué (MQTT déconnecté) : la valeur sera retentée.
+  using PublishFn = std::function<bool(const std::string &, const std::string &, bool)>;
   using SendFn = std::function<void(const std::vector<uint8_t> &)>;
 
   uint32_t ignore_window_ms = 3000;  // fenêtre d'ignorance des RX contradictoires
@@ -545,9 +546,8 @@ class Gateway {
     auto it = cache_.find(key);
     if (!force && it != cache_.end() && it->second == value)
       return;
-    cache_[key] = value;
-    if (publish_)
-      publish_(key, value, retain);
+    if (publish_ && publish_(key, value, retain))
+      cache_[key] = value;  // mis en cache seulement si réellement publié
   }
 
   AcState state_;
