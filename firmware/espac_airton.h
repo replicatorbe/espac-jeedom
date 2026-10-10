@@ -38,6 +38,15 @@ static const uint8_t HDR1 = 0x7A;
 static const uint8_t TX_HEADER[12] = {0x7A, 0x7A, 0x21, 0xD5, 0x18, 0x00,
                                       0x00, 0xA1, 0x00, 0x00, 0x00, 0x00};
 
+// Structure commune observée sur la vraie clim (RX) :
+//   [0..1] 7A 7A, [2] émetteur (D5 état / D1 battement), [3] destinataire (21),
+//   [4] longueur totale de la trame, [7] type, ..., [n-2..n-1] CRC16 (même algo que TX).
+static const size_t RX_LEN_BYTE = 4;
+static const size_t RX_TYPE_BYTE = 7;
+static const uint8_t RX_TYPE_STATE = 0xA3;      // état complet (34 o), envoyé à chaque changement
+static const uint8_t RX_TYPE_HEARTBEAT = 0xA4;  // battement de cœur (13 o), toutes les 10 s
+// 0xA6 (28 o) : trame complémentaire suivant chaque état, contenu nul observé.
+
 // Offsets dans la trame RX (clim -> ESP).
 static const size_t RX_ROOM_TEMP = 10;
 static const size_t RX_MODE_FAN = 13;  // même format que b12 TX
@@ -144,6 +153,7 @@ struct AcState {
   uint8_t mode = 3;         // dernier mode actif (conservé quand power=OFF)
   uint8_t fan = 0;          // code du quartet haut (0..6, 13)
   uint8_t target = 24;      // consigne °C (16..31)
+  uint8_t target_extra = 0; // bits 5-7 de l'octet consigne (0x40 observé en froid) : recopiés tels quels
   uint8_t swing_v = 0;      // 0..6
   bool swing_h = false;
   bool display = true;
@@ -185,7 +195,7 @@ inline std::vector<uint8_t> encode(const AcState &s) {
   std::vector<uint8_t> f(TX_HEADER, TX_HEADER + sizeof(TX_HEADER));
   f.push_back(encode_b12(s));
   uint8_t t = s.target < 16 ? 16 : (s.target > 31 ? 31 : s.target);
-  f.push_back(static_cast<uint8_t>(t - 16));
+  f.push_back(static_cast<uint8_t>((t - 16) | (s.target_extra & 0xE0)));
   f.push_back(static_cast<uint8_t>(((s.swing_h ? 1 : 0) << 4) | (s.swing_v & 0x0F)));
   f.push_back(encode_b15(s));
   f.push_back(s.mute ? 1 : 0);
@@ -226,9 +236,12 @@ inline bool decode(const uint8_t *buf, size_t len, const AcState &prev, AcState 
   if (code_to_name(FANS, fan) != nullptr)
     out.fan = fan;
 
-  int t = buf[RX_SETPOINT] + 16;
-  if (t >= 16 && t <= 31)
+  // Bits 0-4 = consigne − 16 ; bits 5-7 = drapeaux (0x40 vu en mode froid), conservés.
+  int t = (buf[RX_SETPOINT] & 0x1F) + 16;
+  if (t >= 16 && t <= 31) {
     out.target = static_cast<uint8_t>(t);
+    out.target_extra = buf[RX_SETPOINT] & 0xE0;
+  }
 
   uint8_t sw = buf[RX_SWING];
   uint8_t sh = sw >> 4;
@@ -345,7 +358,7 @@ class Gateway {
   uint32_t ignore_window_ms = 3000;  // fenêtre d'ignorance des RX contradictoires
   uint32_t tx_debounce_ms = 150;     // regroupe plusieurs `set` rapprochés en une trame
   uint32_t link_timeout_ms = 60000;  // unit_link
-  bool check_rx_crc = false;
+  bool check_rx_crc = true;
 
   void set_publisher(PublishFn fn) { publish_ = std::move(fn); }
   void set_sender(SendFn fn) { send_ = std::move(fn); }
@@ -357,24 +370,31 @@ class Gateway {
   // Traite une trame brute. Retourne true si elle a été jugée valide.
   bool on_rx_frame(const std::vector<uint8_t> &frame, uint32_t now) {
     std::string hex = to_hex(frame.data(), frame.size());
-    publish_value_("last_frame", hex, true, false);  // retenu (diagnostic), seulement si la trame change
-    ESP_LOGI(TAG, "RX %u o : %s", (unsigned) frame.size(), hex.c_str());
-
-    if (frame.size() < RX_MIN_LEN) {
-      ESP_LOGW(TAG, "RX ignorée : %u o < %u : %s", (unsigned) frame.size(), (unsigned) RX_MIN_LEN, hex.c_str());
+    size_t n = frame.size();
+    bool header_ok = n > RX_TYPE_BYTE && frame[0] == HDR0 && frame[1] == HDR1 && frame[RX_LEN_BYTE] == n;
+    bool crc_ok = rx_crc_ok(frame.data(), n);
+    if (!header_ok || (check_rx_crc && !crc_ok)) {
+      ESP_LOGW(TAG, "RX invalide (%s) : %s", header_ok ? "CRC" : "en-tête/longueur", hex.c_str());
       return false;
     }
-    bool crc_ok = rx_crc_ok(frame.data(), frame.size());
-    ESP_LOGD(TAG, "RX %u o (CRC hypothèse %s) : %s", (unsigned) frame.size(), crc_ok ? "OK" : "KO", hex.c_str());
-    if (check_rx_crc && !crc_ok) {
-      ESP_LOGW(TAG, "RX ignorée : CRC invalide");
-      return false;
-    }
-
-    AcState rx;
-    decode(frame.data(), frame.size(), state_, rx);
+    // Toute trame valide prouve que le lien série fonctionne.
     last_rx_ms_ = now;
     have_rx_ = true;
+
+    uint8_t type = frame[RX_TYPE_BYTE];
+    if (type == RX_TYPE_HEARTBEAT) {
+      ESP_LOGV(TAG, "RX battement : %s", hex.c_str());
+      return false;
+    }
+    publish_value_("last_frame", hex, true, false);  // retenu (diagnostic), seulement si la trame change
+    if (type != RX_TYPE_STATE || n < RX_MIN_LEN) {
+      ESP_LOGD(TAG, "RX type 0x%02X (%u o) non décodé : %s", type, (unsigned) n, hex.c_str());
+      return false;
+    }
+    ESP_LOGI(TAG, "RX état : %s", hex.c_str());
+
+    AcState rx;
+    decode(frame.data(), n, state_, rx);
 
     // Fenêtre post-commande : on ignore les trames qui contredisent la commande.
     if (pending_fields_ != 0) {

@@ -67,3 +67,18 @@ Notes d'implémentation :
   Les `set` reçus avant cette première trame sont ignorés (WARN) et aucun `state` climatisation n'est publié.
 - Plusieurs `set` reçus à moins de 150 ms d'intervalle sont regroupés en une seule trame.
 - Pendant ~3 s après une commande, les trames RX qui contredisent la commande sont ignorées (latence clim).
+
+## Observations sur la vraie clim (10/10/2026)
+
+Structure commune des trames RX : `7A 7A [émetteur] 21 [longueur totale] 00 00 [type] … [CRC16 MSB LSB]`.
+Le CRC RX est le même que le CRC TX (CRC-16/MODBUS sur toute la trame sauf les 2 derniers octets) : **confirmé**.
+
+| Type `[7]` | Longueur | Émetteur `[2]` | Rôle |
+|---|---|---|---|
+| `A4` | 13 | `D1` | battement de cœur, toutes les 10 s (compte pour `unit_link`) |
+| `A3` | 34 | `D5` | état complet, envoyé à chaque changement (télécommande ou commande) |
+| `A6` | 28 | `D5` | complément suivant chaque état (octets nuls observés) |
+
+Octet consigne `[14]` : bits 0-4 = consigne − 16 ; bits 5-7 = drapeaux (`0x40` observé en mode froid),
+recopiés tels quels en TX. `[21]` reflète le mode (0 auto, 1 cool, 2 dry, 3 fan_only, 4 heat).
+La clim n'envoie **pas** d'état périodique : uniquement à la mise sous tension et à chaque changement.

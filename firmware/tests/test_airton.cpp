@@ -9,6 +9,7 @@
 
 // --- Bouchons ESPHome -------------------------------------------------------
 #define ESP_LOGD(tag, ...) ((void) 0)
+#define ESP_LOGV(tag, ...) ((void) 0)
 #define ESP_LOGI(tag, ...) ((void) 0)
 #define ESP_LOGW(tag, ...) (printf("    [WARN] "), printf(__VA_ARGS__), printf("\n"))
 
@@ -56,15 +57,27 @@ static std::string hex(const std::vector<uint8_t> &v) { return to_hex(v.data(), 
 
 // Fabrique une trame RX de 34 octets à partir d'une trame TX (mêmes champs décalés de +1).
 static std::vector<uint8_t> make_rx(uint8_t room, uint8_t b12, uint8_t b13, uint8_t b14, uint8_t b15) {
-  std::vector<uint8_t> f(34, 0);
-  f[0] = 0x7A;
-  f[1] = 0x7A;
+  std::vector<uint8_t> f = {0x7A, 0x7A, 0xD5, 0x21, 0x22, 0x00, 0x00, 0xA3};
+  f.resize(32, 0);
   f[10] = room;
   f[13] = b12;
   f[14] = b13;
   f[15] = b14;
   f[16] = b15;
+  uint16_t crc = esphome::crc16(f.data(), f.size());
+  f.push_back(crc >> 8);
+  f.push_back(crc & 0xFF);
   return f;
+}
+
+static std::vector<uint8_t> from_hex(const char *h) {
+  std::vector<uint8_t> v;
+  for (const char *p = h; *p;) {
+    if (*p == ' ') { p++; continue; }
+    v.push_back(static_cast<uint8_t>(strtol(std::string(p, 2).c_str(), nullptr, 16)));
+    p += 2;
+  }
+  return v;
 }
 
 static AcState base_state() {
@@ -196,6 +209,38 @@ static void test_roundtrip() {
                 }
   g_ok++;
   printf("    %d combinaisons OK\n", n);
+}
+
+// Trames réellement capturées sur la clim (10/10/2026, télécommande).
+static void test_real_frames() {
+  printf("- Trames réelles de la clim\n");
+  Gateway gw;
+  std::vector<std::string> keys, vals;
+  gw.set_publisher([&](const std::string &k, const std::string &v, bool) { keys.push_back(k); vals.push_back(v); return true; });
+  auto hb = from_hex("7A 7A D1 21 0D 00 00 A4 0A 0A 00 25 25");
+  auto ack = from_hex("7A 7A D5 21 1C 00 00 A6 0A 0A 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 52 0B");
+  auto cool20 = from_hex("7A 7A D5 21 22 00 00 A3 0A 0A 15 00 00 09 44 00 88 00 00 00 00 01 64 06 15 44 42 31 31 35 31 30 97 68");
+  auto heat28 = from_hex("7A 7A D5 21 22 00 00 A3 0A 0A 15 00 00 0C 0C 00 98 00 00 00 00 04 64 06 15 44 42 31 31 35 31 30 ED 2F");
+  CHECK(rx_crc_ok(hb.data(), hb.size()));
+  CHECK(rx_crc_ok(ack.data(), ack.size()));
+  CHECK(rx_crc_ok(cool20.data(), cool20.size()));
+  CHECK(!gw.on_rx_frame(hb, 100));    // battement : lien OK mais pas d'état
+  CHECK(gw.unit_link(200));
+  CHECK(!gw.synced());
+  CHECK(!gw.on_rx_frame(ack, 300));   // complément : non décodé
+  CHECK(gw.on_rx_frame(cool20, 400));
+  CHECK(gw.synced());
+  CHECK(gw.state().power && gw.state().mode == 1 && gw.state().target == 20 && gw.state().room_temp == 21);
+  CHECK(gw.state().target_extra == 0x40);
+  // La consigne renvoyée conserve le drapeau 0x40.
+  CHECK(encode(gw.state())[13] == 0x44);
+  CHECK(gw.on_rx_frame(heat28, 500));
+  CHECK(gw.state().mode == 4 && gw.state().target == 28 && gw.state().target_extra == 0);
+  // Trame corrompue (CRC) rejetée.
+  auto bad = cool20;
+  bad[14] ^= 0x01;
+  CHECK(!gw.on_rx_frame(bad, 600));
+  CHECK(gw.state().mode == 4);
 }
 
 static void test_decode_guards() {
@@ -356,6 +401,7 @@ int main() {
   test_turbo();
   test_power_off();
   test_roundtrip();
+  test_real_frames();
   test_decode_guards();
   test_splitter();
   test_gateway();

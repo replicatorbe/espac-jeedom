@@ -5,7 +5,7 @@
 substitutions:
   device_name: espac-salon          # [a-z0-9-], utilisé dans les topics espac/<dev>/...
   friendly_name: "ESPAC Salon"
-  fw_version: "0.1.1"
+  fw_version: "0.2.0"
   mqtt_broker: 192.168.0.125
   # Broches (ESP32 DevKit 30 broches)
   uart_tx_pin: GPIO16               # TX ESP -> RX clim (fil bleu côté clim)
@@ -13,7 +13,7 @@ substitutions:
   led_pin: GPIO2                    # LED intégrée
   # Réception
   rx_gap_ms: "30"                   # silence inter-octets marquant la fin d'une trame
-  rx_check_crc: "false"             # CRC des trames RX encore inconnu : ne pas rejeter
+  rx_check_crc: "true"              # CRC RX confirmé sur la vraie clim (même algo que TX)
   cmd_ignore_ms: "3000"             # fenêtre d'ignorance des RX contradictoires après commande
 
 esphome:
