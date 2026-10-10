@@ -5,7 +5,7 @@
 substitutions:
   device_name: espac-salon          # [a-z0-9-], utilisé dans les topics espac/<dev>/...
   friendly_name: "ESPAC Salon"
-  fw_version: "0.1.0"
+  fw_version: "0.1.1"
   mqtt_broker: 192.168.0.125
   # Broches (ESP32 DevKit 30 broches)
   uart_tx_pin: GPIO16               # TX ESP -> RX clim (fil bleu côté clim)
@@ -55,6 +55,7 @@ esp32:
     type: esp-idf
 
 logger:
+  baud_rate: 0                      # pas de logs sur UART0 (TX0/RX0) : consultables via wifi (API / web)
   level: DEBUG                      # mise au point : trames RX visibles dans les logs (repasser en INFO ensuite)
 
 wifi:
@@ -134,6 +135,9 @@ script:
       - output.turn_off: led_out
 
 globals:
+  - id: rx_bytes
+    type: uint32_t
+    initial_value: "0"
   - id: mqtt_was_connected
     type: bool
     initial_value: "false"
@@ -149,6 +153,7 @@ interval:
           bool got = false;
           while (id(uart_bus).available() > 0 && id(uart_bus).read_byte(&b)) {
             sp.push(b, millis());
+            id(rx_bytes)++;
             got = true;
           }
           if (!got) {
@@ -197,5 +202,10 @@ interval:
   - interval: 5s
     then:
       - lambda: |-
-          if (id(mqtt_client).is_connected())
-            espac::gateway().publish_link(millis());
+          if (!id(mqtt_client).is_connected())
+            return;
+          espac::gateway().publish_link(millis());
+          static uint32_t last_rx_bytes = UINT32_MAX;
+          if (id(rx_bytes) != last_rx_bytes &&
+              id(mqtt_client).publish("espac/${device_name}/state/rx_bytes", std::to_string(id(rx_bytes)), 0, true))
+            last_rx_bytes = id(rx_bytes);

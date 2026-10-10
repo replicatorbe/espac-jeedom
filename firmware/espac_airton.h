@@ -357,7 +357,8 @@ class Gateway {
   // Traite une trame brute. Retourne true si elle a été jugée valide.
   bool on_rx_frame(const std::vector<uint8_t> &frame, uint32_t now) {
     std::string hex = to_hex(frame.data(), frame.size());
-    publish_value_("last_frame", hex, false, false);  // non retenu, seulement si la trame change
+    publish_value_("last_frame", hex, true, false);  // retenu (diagnostic), seulement si la trame change
+    ESP_LOGI(TAG, "RX %u o : %s", (unsigned) frame.size(), hex.c_str());
 
     if (frame.size() < RX_MIN_LEN) {
       ESP_LOGW(TAG, "RX ignorée : %u o < %u : %s", (unsigned) frame.size(), (unsigned) RX_MIN_LEN, hex.c_str());

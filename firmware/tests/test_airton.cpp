@@ -274,7 +274,7 @@ static void test_gateway() {
   CHECK_EQ_STR(last("room_temperature"), "21");
   CHECK(count("last_frame") == 1);
   for (auto &p : pubs) {
-    if (p.key == "last_frame") CHECK(!p.retain);
+    if (p.key == "last_frame") CHECK(p.retain);
     else CHECK(p.retain);
   }
 
