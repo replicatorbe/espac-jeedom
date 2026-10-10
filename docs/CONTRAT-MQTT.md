@@ -84,6 +84,6 @@ Octet consigne `[14]` : bits 0-4 = consigne − 16 ; bit 6 (`0x40`) = ventilatio
 (avec quartet ventilation = 0) ; bits 5 et 7 inconnus, recopiés tels quels en TX.
 
 Cycle de la touche ventilation de la télécommande (confirmé) :
-`very_high`(5) → `turbo`(13, « méga-turbo ») → `humidity`(6, rôle exact inconnu) → `auto`(0)
+`very_high`(5) → `turbo`(13, pictogramme turbo) → `humidity`(6, ventilation selon l'humidité ; la télécommande affiche « 60 », objectif non transmis dans la trame) → `auto`(0)
 → `quiet`(0 + bit 0x40) → `very_low`(1) → `low`(2) → `medium`(3) → `high`(4) → `very_high`(5). `[21]` reflète le mode (0 auto, 1 cool, 2 dry, 3 fan_only, 4 heat).
 La clim n'envoie **pas** d'état périodique : uniquement à la mise sous tension et à chaque changement.
