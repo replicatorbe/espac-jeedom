@@ -387,12 +387,12 @@ class Gateway {
       ESP_LOGV(TAG, "RX battement : %s", hex.c_str());
       return false;
     }
-    publish_value_("last_frame", hex, true, false);  // retenu (diagnostic), seulement si la trame change
     if (type != RX_TYPE_STATE || n < RX_MIN_LEN) {
       ESP_LOGD(TAG, "RX type 0x%02X (%u o) non décodé : %s", type, (unsigned) n, hex.c_str());
       return false;
     }
     ESP_LOGI(TAG, "RX état : %s", hex.c_str());
+    publish_value_("last_frame", hex, true, false);  // dernière trame d'état, retenue (diagnostic)
 
     AcState rx;
     decode(frame.data(), n, state_, rx);
