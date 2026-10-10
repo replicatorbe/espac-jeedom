@@ -1,0 +1,189 @@
+# espac-jeedom — passerelle ESP32 <-> climatiseur Airton (UART) <-> Jeedom (MQTT).
+# Contrat MQTT : ../docs/CONTRAT-MQTT.md
+# Aucune régulation ici : l'ESP reflète l'état réel de la clim et exécute les commandes.
+
+substitutions:
+  device_name: espac-salon          # [a-z0-9-], utilisé dans les topics espac/<dev>/...
+  friendly_name: "ESPAC Salon"
+  fw_version: "0.1.0"
+  mqtt_broker: 192.168.0.125
+  # Broches (ESP32 DevKit 30 broches)
+  uart_tx_pin: GPIO16               # TX ESP -> RX clim (fil bleu côté clim)
+  uart_rx_pin: GPIO17               # RX ESP <- TX clim (fil vert côté clim) — attention 5 V !
+  led_pin: GPIO2                    # LED intégrée
+  # Réception
+  rx_gap_ms: "30"                   # silence inter-octets marquant la fin d'une trame
+  rx_check_crc: "false"             # CRC des trames RX encore inconnu : ne pas rejeter
+  cmd_ignore_ms: "3000"             # fenêtre d'ignorance des RX contradictoires après commande
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  project:
+    name: "espac.espac-jeedom"
+    version: ${fw_version}
+  includes:
+    - espac_airton.h
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          auto &gw = espac::gateway();
+          gw.check_rx_crc = ${rx_check_crc};
+          gw.ignore_window_ms = ${cmd_ignore_ms};
+          espac::splitter().set_gap(${rx_gap_ms});
+          gw.set_publisher([](const std::string &key, const std::string &value, bool retain) {
+            if (!id(mqtt_client).is_connected())
+              return;
+            id(mqtt_client).publish("espac/${device_name}/state/" + key, value, 0, retain);
+          });
+          gw.set_sender([](const std::vector<uint8_t> &frame) {
+            id(uart_bus).write_array(frame.data(), frame.size());
+            id(led).turn_on();
+          });
+          // Un seul abonnement pour toutes les commandes : espac/<dev>/set/<clé>
+          static const std::string prefix = "espac/${device_name}/set/";
+          id(mqtt_client).subscribe(prefix + "#", [](const std::string &topic, const std::string &payload) {
+            if (topic.compare(0, prefix.size(), prefix) != 0)
+              return;
+            espac::gateway().on_set(topic.substr(prefix.size()), payload, millis());
+          });
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "ESPAC ${device_name}"
+    password: !secret ap_password
+
+captive_portal:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# API native : permet la coexistence avec le plugin Jeedom esphomebe (facultatif).
+api:
+  encryption:
+    key: !secret api_key
+
+# Interface web locale (logs en direct, utile pour la mise au point). Facultative.
+web_server:
+  port: 80
+  version: 3
+  local: true
+  auth:
+    type: digest
+    username: admin
+    password: !secret web_password
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_broker}
+  port: 1883
+  discovery: false
+  topic_prefix: espac/${device_name}
+  log_topic: null                   # pas de logs sur MQTT : seul le contrat est publié
+  birth_message:
+    topic: espac/${device_name}/status
+    payload: online
+    retain: true
+  will_message:
+    topic: espac/${device_name}/status
+    payload: offline
+    retain: true
+  shutdown_message:
+    topic: espac/${device_name}/status
+    payload: offline
+    retain: true
+  on_connect:
+    then:
+      - lambda: |-
+          char ip[network::IP_ADDRESS_BUFFER_SIZE] = "";
+          auto addrs = wifi::global_wifi_component->get_ip_addresses();
+          for (auto &a : addrs) {
+            if (a.is_set()) {
+              a.str_to(ip);
+              break;
+            }
+          }
+          std::string info = "{\"name\":\"${device_name}\",\"mac\":\"" + get_mac_address_pretty() +
+                             "\",\"ip\":\"" + std::string(ip) + "\",\"version\":\"${fw_version}\"," +
+                             "\"fw\":\"espac-jeedom\"}";
+          id(mqtt_client).publish("espac/${device_name}/info", info, 0, true);
+          auto &gw = espac::gateway();
+          gw.publish_diag(wifi::global_wifi_component->wifi_rssi(), millis() / 1000, millis());
+          gw.publish_all();
+
+uart:
+  id: uart_bus
+  tx_pin: ${uart_tx_pin}
+  rx_pin: ${uart_rx_pin}
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 1024
+
+sensor:
+  - platform: uptime
+    id: uptime_s
+    internal: true
+    update_interval: 60s
+
+switch:
+  - platform: gpio
+    id: led
+    internal: true
+    pin:
+      number: ${led_pin}
+      ignore_strapping_warning: true   # GPIO2 = LED intégrée, sans risque ici
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - delay: 60ms
+      - switch.turn_off: led
+
+interval:
+  # Lecture continue de l'UART + découpage en trames + envoi des commandes en attente.
+  - interval: 10ms
+    then:
+      - lambda: |-
+          auto &sp = espac::splitter();
+          auto &gw = espac::gateway();
+          uint8_t b;
+          bool got = false;
+          while (id(uart_bus).available() > 0 && id(uart_bus).read_byte(&b)) {
+            sp.push(b, millis());
+            got = true;
+          }
+          if (!got) {
+            for (auto &frame : sp.poll(millis())) {
+              id(led).turn_on();
+              gw.on_rx_frame(frame, millis());
+            }
+          }
+          gw.loop(millis());
+
+  # Diagnostic : rssi, uptime, unit_link (pas de SNTP nécessaire).
+  - interval: 60s
+    then:
+      - lambda: |-
+          if (!id(mqtt_client).is_connected())
+            return;
+          uint32_t up = isnan(id(uptime_s).state) ? millis() / 1000 : (uint32_t) id(uptime_s).state;
+          espac::gateway().publish_diag(wifi::global_wifi_component->wifi_rssi(), up, millis());
+
+  # unit_link réactif (passage OFF dès 60 s sans trame, sans attendre le cycle de diag).
+  - interval: 5s
+    then:
+      - lambda: |-
+          if (id(mqtt_client).is_connected())
+            espac::gateway().publish_link(millis());

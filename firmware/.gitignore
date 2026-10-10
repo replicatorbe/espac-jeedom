@@ -1,0 +1,9 @@
+# Secrets réels
+secrets.yaml
+# Artefacts ESPHome / compilation
+.esphome/
+build/
+.pioenvs/
+.piolibdeps/
+# Tests hôte
+tests/build/
