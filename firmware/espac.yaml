@@ -5,7 +5,7 @@
 substitutions:
   device_name: espac-salon          # [a-z0-9-], utilisé dans les topics espac/<dev>/...
   friendly_name: "ESPAC Salon"
-  fw_version: "0.2.0"
+  fw_version: "0.2.1"
   mqtt_broker: 192.168.0.125
   # Broches (ESP32 DevKit 30 broches)
   uart_tx_pin: GPIO16               # TX ESP -> RX clim (fil bleu côté clim)

@@ -374,7 +374,8 @@ class Gateway {
     bool header_ok = n > RX_TYPE_BYTE && frame[0] == HDR0 && frame[1] == HDR1 && frame[RX_LEN_BYTE] == n;
     bool crc_ok = rx_crc_ok(frame.data(), n);
     if (!header_ok || (check_rx_crc && !crc_ok)) {
-      ESP_LOGW(TAG, "RX invalide (%s) : %s", header_ok ? "CRC" : "en-tête/longueur", hex.c_str());
+      // Fréquent si la liaison est bruitée (soudure, fils) : ignoré silencieusement.
+      ESP_LOGD(TAG, "RX invalide ignorée (%s) : %s", header_ok ? "CRC" : "en-tête/longueur", hex.c_str());
       return false;
     }
     // Toute trame valide prouve que le lien série fonctionne.
