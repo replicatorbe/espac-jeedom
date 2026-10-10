@@ -291,6 +291,52 @@ inline uint16_t diff_fields(const AcState &a, const AcState &b) {
 }
 
 // ---------------------------------------------------------------------------
+// Sauvegarde de l'état en flash (64 bits) : permet de commander la clim dès le
+// redémarrage de l'ESP, sans attendre que la clim envoie une trame d'état.
+// ---------------------------------------------------------------------------
+static const uint8_t PACK_MAGIC = 0xE5;  // à changer si le format évolue
+
+inline uint64_t pack(const AcState &s) {
+  uint64_t v = 0;
+  v |= (uint64_t) PACK_MAGIC;
+  v |= (uint64_t) (s.mode & 0x07) << 8;
+  v |= (uint64_t) (s.power ? 1 : 0) << 11;
+  v |= (uint64_t) (s.swing_h ? 1 : 0) << 12;
+  v |= (uint64_t) (s.display ? 1 : 0) << 13;
+  v |= (uint64_t) (s.mute ? 1 : 0) << 14;
+  v |= (uint64_t) (s.clean ? 1 : 0) << 15;
+  v |= (uint64_t) (s.fan & 0x0F) << 16;
+  v |= (uint64_t) (s.swing_v & 0x0F) << 20;
+  v |= (uint64_t) s.target << 24;
+  v |= (uint64_t) s.target_extra << 32;
+  v |= (uint64_t) s.flags_extra << 40;
+  return v;
+}
+
+// Retourne false si la valeur n'est pas une sauvegarde valide (flash vierge, ancien format).
+inline bool unpack(uint64_t v, AcState &s) {
+  if ((v & 0xFF) != PACK_MAGIC)
+    return false;
+  AcState o;
+  o.mode = (v >> 8) & 0x07;
+  o.power = (v >> 11) & 1;
+  o.swing_h = (v >> 12) & 1;
+  o.display = (v >> 13) & 1;
+  o.mute = (v >> 14) & 1;
+  o.clean = (v >> 15) & 1;
+  o.fan = (v >> 16) & 0x0F;
+  o.swing_v = (v >> 20) & 0x0F;
+  o.target = (v >> 24) & 0xFF;
+  o.target_extra = (v >> 32) & 0xFF;
+  o.flags_extra = (v >> 40) & 0xFF;
+  if (code_to_name(MODES, o.mode) == nullptr || code_to_name(FANS, o.fan) == nullptr ||
+      code_to_name(SWINGS_V, o.swing_v) == nullptr || o.target < 16 || o.target > 31)
+    return false;
+  s = o;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Découpage du flux UART en trames (timeout inter-octets + en-tête 7A 7A)
 // ---------------------------------------------------------------------------
 class FrameSplitter {
@@ -372,6 +418,22 @@ class Gateway {
   void set_sender(SendFn fn) { send_ = std::move(fn); }
 
   bool synced() const { return synced_; }
+  bool restored() const { return restored_; }
+
+  // Reprend le dernier état sauvegardé (au démarrage). Les commandes sont alors
+  // acceptées immédiatement ; la clim renvoie son état réel dès la première commande
+  // (ou au prochain changement), ce qui corrige un éventuel écart.
+  bool restore(uint64_t saved) {
+    AcState s;
+    if (synced_ || !unpack(saved, s))
+      return false;
+    state_ = s;
+    synced_ = true;
+    restored_ = true;
+    ESP_LOGI(TAG, "État restauré depuis la flash (en attente de confirmation par la clim)");
+    publish_state_(false);
+    return true;
+  }
   const AcState &state() const { return state_; }
 
   // --- Réception ---------------------------------------------------------
@@ -422,9 +484,10 @@ class Gateway {
     }
 
     rx.mute = state_.mute;  // le volume n'est pas renvoyé par la clim
-    if (!synced_) {
-      ESP_LOGI(TAG, "Première trame valide reçue : synchronisé avec la clim");
+    if (!synced_ || restored_) {
+      ESP_LOGI(TAG, "Trame d'état reçue : synchronisé avec la clim");
       synced_ = true;
+      restored_ = false;
     }
     state_ = rx;
     publish_state_(false);
@@ -582,6 +645,7 @@ class Gateway {
 
   AcState state_;
   bool synced_ = false;
+  bool restored_ = false;
   bool have_rx_ = false;
   uint32_t last_rx_ms_ = 0;
   uint32_t last_cmd_ms_ = 0;

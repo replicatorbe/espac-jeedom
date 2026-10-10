@@ -5,7 +5,7 @@
 substitutions:
   device_name: espac-salon          # [a-z0-9-], utilisé dans les topics espac/<dev>/...
   friendly_name: "ESPAC Salon"
-  fw_version: "0.3.0"
+  fw_version: "0.4.0"
   mqtt_broker: 192.168.0.125
   # Broches (ESP32 DevKit 30 broches)
   uart_tx_pin: GPIO16               # TX ESP -> RX clim (fil bleu côté clim)
@@ -31,6 +31,7 @@ esphome:
           auto &gw = espac::gateway();
           gw.check_rx_crc = ${rx_check_crc};
           gw.ignore_window_ms = ${cmd_ignore_ms};
+          gw.restore(id(saved_state));
           espac::splitter().set_gap(${rx_gap_ms});
           gw.set_publisher([](const std::string &key, const std::string &value, bool retain) -> bool {
             if (!id(mqtt_client).is_connected())
@@ -56,7 +57,7 @@ esp32:
 
 logger:
   baud_rate: 0                      # pas de logs sur UART0 (TX0/RX0) : consultables via wifi (API / web)
-  level: DEBUG                      # mise au point : trames RX visibles dans les logs (repasser en INFO ensuite)
+  level: INFO                       # DEBUG pour la mise au point (trames non décodées, rejets CRC)
 
 wifi:
   ssid: !secret wifi_ssid
@@ -135,6 +136,11 @@ script:
       - output.turn_off: led_out
 
 globals:
+  # Dernier état connu de la clim, sauvegardé en flash (voir espac::pack).
+  - id: saved_state
+    type: uint64_t
+    restore_value: true
+    initial_value: "0"
   - id: rx_bytes
     type: uint32_t
     initial_value: "0"
@@ -189,6 +195,17 @@ interval:
             gw.publish_diag(wifi::global_wifi_component->wifi_rssi(), millis() / 1000, millis());
           }
           id(mqtt_was_connected) = now_connected;
+
+  # Sauvegarde de l'état s'il a changé (écrit en flash par ESPHome au plus toutes les 60 s).
+  - interval: 10s
+    then:
+      - lambda: |-
+          auto &gw = espac::gateway();
+          if (!gw.synced())
+            return;
+          uint64_t v = espac::pack(gw.state());
+          if (v != id(saved_state))
+            id(saved_state) = v;
 
   # Diagnostic : rssi, uptime, unit_link (pas de SNTP nécessaire).
   - interval: 60s

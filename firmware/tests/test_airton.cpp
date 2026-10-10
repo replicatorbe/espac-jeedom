@@ -253,6 +253,36 @@ static void test_real_frames() {
   CHECK(gw.state().mode == 4);
 }
 
+static void test_persistence() {
+  printf("- Sauvegarde / restauration de l'état\n");
+  AcState a = base_state();
+  a.fan = FAN_QUIET;
+  a.target = 24;
+  a.target_extra = 0x20;
+  a.swing_v = 6;
+  a.swing_h = true;
+  a.clean = true;
+  a.flags_extra = 0x10;
+  AcState b;
+  CHECK(unpack(pack(a), b));
+  CHECK(diff_fields(a, b) == 0 && b.target_extra == 0x20 && b.flags_extra == 0x10);
+  CHECK(!unpack(0, b));                    // flash vierge
+  CHECK(!unpack(pack(a) ^ 0x01, b));       // mauvais magic
+  // Gateway : restauration => commandes acceptées tout de suite.
+  Gateway gw;
+  int sent = 0;
+  gw.set_sender([&](const std::vector<uint8_t> &) { sent++; });
+  CHECK(gw.restore(pack(a)));
+  CHECK(gw.synced() && gw.restored());
+  CHECK(!gw.restore(pack(a)));             // une seule fois
+  CHECK(gw.on_set("target_temperature", "25", 100));
+  gw.loop(300);
+  CHECK(sent == 1);
+  // Première vraie trame : plus « restauré ».
+  gw.on_rx_frame(make_rx(21, 0x39, 9, 4, 0x88), 5000);
+  CHECK(!gw.restored());
+}
+
 static void test_decode_guards() {
   printf("- Décodage : longueur minimale, valeurs hors table\n");
   AcState out;
@@ -412,6 +442,7 @@ int main() {
   test_power_off();
   test_roundtrip();
   test_real_frames();
+  test_persistence();
   test_decode_guards();
   test_splitter();
   test_gateway();
