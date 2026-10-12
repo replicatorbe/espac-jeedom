@@ -1,8 +1,10 @@
 // espac_airton.h — protocole série des climatiseurs Airton + passerelle MQTT.
 //
-// Code original du projet espac-jeedom. Seuls les *faits* du protocole (offsets,
-// bits, CRC) proviennent de l'observation documentée par le projet ESPAC de
-// dOHMotik (https://github.com/git-greatguy/espac). Voir docs/CONTRAT-MQTT.md.
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 replicatorbe — projet espac-jeedom.
+// Dérivé d'ESPAC, (C) 2025-2026 git-greatguy / Dohmotik, GPL-3.0-only :
+// https://github.com/git-greatguy/espac — les faits du protocole (offsets, bits)
+// viennent de ce projet. Voir LICENSE, NOTICE et docs/CONTRAT-MQTT.md.
 //
 // Ce fichier ne dépend que de la STL et de esphome::crc16 (+ macros ESP_LOGx),
 // ce qui permet de le compiler sur l'hôte pour les tests (firmware/tests/).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Tests hôte (macOS/Linux) de espac_airton.h — sans ESPHome.
 // Compilation : voir run_tests.sh
 #define ESPAC_HOST_TEST 1

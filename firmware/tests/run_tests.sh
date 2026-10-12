@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
 # Compile et exécute les tests hôte de espac_airton.h (clang++ du Mac ou g++).
 set -eu
 cd "$(dirname "$0")"

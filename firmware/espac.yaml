@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 # espac-jeedom — passerelle ESP32 <-> climatiseur Airton (UART) <-> Jeedom (MQTT).
 # Contrat MQTT : ../docs/CONTRAT-MQTT.md
 # Aucune régulation ici : l'ESP reflète l'état réel de la clim et exécute les commandes.

@@ -1,0 +1,12 @@
+espac-jeedom — passerelle ESP32 (ESPHome) entre climatiseurs Airton et Jeedom.
+Copyright (C) 2026 replicatorbe.
+
+Projet dérivé d'ESPAC — Copyright (C) 2025-2026 git-greatguy (Dohmotik).
+Projet d'origine : https://github.com/git-greatguy/espac
+ESPAC est distribué sous GPL-3.0-only, avec l'accord de son auteur pour les
+adaptations Jeedom.
+
+espac-jeedom est distribué sous GPL-3.0-only. Voir LICENSE.
+
+ESPHome est un projet distinct : conserver ses notices et celles de ses
+dépendances lors de la distribution d'un firmware compilé.
